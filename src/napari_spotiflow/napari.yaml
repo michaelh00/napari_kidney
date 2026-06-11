@@ -1,0 +1,10 @@
+name: napari-spotiflow
+display_name: Spotiflow Dot Detector
+contributions:
+  commands:
+    - id: napari-spotiflow.make_widget
+      title: Create Spotiflow Dot Detector
+      python_name: napari_spotiflow._widget:SpotiflowWidget
+  widgets:
+    - command: napari-spotiflow.make_widget
+      display_name: Spotiflow Dot Detector

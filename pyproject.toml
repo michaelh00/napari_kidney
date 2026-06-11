@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "napari-spotiflow"
+version = "0.1.0"
+description = "Simple napari plugin for Spotiflow dot detection."
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "pandas>=2.0",
+    "openpyxl>=3.1",
+    "tifffile>=2023.7",
+    "imageio>=2.34",
+]
+
+[project.entry-points."napari.manifest"]
+napari-spotiflow = "napari_spotiflow:napari.yaml"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+napari_spotiflow = ["napari.yaml"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
