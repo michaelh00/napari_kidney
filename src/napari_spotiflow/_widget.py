@@ -9,6 +9,7 @@ import pandas as pd
 import tifffile
 from qtpy.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -17,6 +18,7 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QListWidget,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -57,6 +59,8 @@ class SpotiflowWidget(QWidget):
 
         self._model = None
         self._model_name = "general"
+        self._current_image_layer = None
+        self._current_points_layer = None
 
         self.setLayout(QVBoxLayout())
 
@@ -70,7 +74,15 @@ class SpotiflowWidget(QWidget):
         self.layout().addWidget(self._build_batch_group())
 
         self.status_label = QLabel("Ready")
-        self.layout().addWidget(self.status_label)
+        status_row = QHBoxLayout()
+        self._busy_indicator = QProgressBar()
+        self._busy_indicator.setRange(0, 0)
+        self._busy_indicator.setFixedWidth(80)
+        self._busy_indicator.setFixedHeight(10)
+        self._busy_indicator.hide()
+        status_row.addWidget(self._busy_indicator)
+        status_row.addWidget(self.status_label, stretch=1)
+        self.layout().addLayout(status_row)
 
     def _build_single_group(self) -> QGroupBox:
         box = QGroupBox("1) Individual image processing")
@@ -82,9 +94,7 @@ class SpotiflowWidget(QWidget):
         browse_single_folder_btn.clicked.connect(self._pick_single_folder)
 
         self.image_combo = QComboBox()
-        refresh_btn = QPushButton("Refresh images")
-        refresh_btn.clicked.connect(self._refresh_single_images)
-
+        self.image_combo.currentIndexChanged.connect(self._load_selected_image)
         run_single_btn = QPushButton("Detect dots (single)")
         run_single_btn.clicked.connect(self._run_single)
 
@@ -96,8 +106,7 @@ class SpotiflowWidget(QWidget):
         grid.addWidget(browse_single_folder_btn, 0, 2)
 
         grid.addWidget(QLabel("Image:"), 1, 0)
-        grid.addWidget(self.image_combo, 1, 1)
-        grid.addWidget(refresh_btn, 1, 2)
+        grid.addWidget(self.image_combo, 1, 1, 1, 2)
 
         grid.addWidget(run_single_btn, 2, 1)
 
@@ -148,6 +157,15 @@ class SpotiflowWidget(QWidget):
 
         return box
 
+    def _set_busy(self, busy: bool, message: str = ""):
+        if busy:
+            self._busy_indicator.show()
+        else:
+            self._busy_indicator.hide()
+        if message:
+            self.status_label.setText(message)
+        QApplication.processEvents()
+
     def _pick_single_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select image folder")
         if not folder:
@@ -156,16 +174,57 @@ class SpotiflowWidget(QWidget):
         self._refresh_single_images()
 
     def _refresh_single_images(self):
+        self.image_combo.blockSignals(True)
         self.image_combo.clear()
+
         folder = Path(self.single_folder_edit.text().strip())
         if not folder.exists() or not folder.is_dir():
+            self.image_combo.blockSignals(False)
             return
 
         images = list(_iter_images(folder))
         for p in images:
             self.image_combo.addItem(p.name)
 
+        self.image_combo.blockSignals(False)
+
         self.status_label.setText(f"Found {len(images)} image(s) in {folder.name}")
+        self._load_selected_image()
+
+    def _load_selected_image(self):
+        folder = Path(self.single_folder_edit.text().strip())
+        image_name = self.image_combo.currentText()
+        if not folder.is_dir() or not image_name:
+            return
+
+        image_path = folder / image_name
+        try:
+            self._set_busy(True, f"Loading: {image_name}")
+            image = _load_image_2d(image_path)
+        except Exception as exc:
+            self._set_busy(False, "Error loading image")
+            QMessageBox.critical(self, "Load error", str(exc))
+            return
+
+        # Replace previous image layer if it exists
+        if self._current_image_layer is not None:
+            try:
+                self.viewer.layers.remove(self._current_image_layer)
+            except Exception:
+                pass
+            self._current_image_layer = None
+
+        if self._current_points_layer is not None:
+            try:
+                self.viewer.layers.remove(self._current_points_layer)
+            except Exception:
+                pass
+            self._current_points_layer = None
+
+        self.single_count_edit.setText("0")
+
+        self._current_image_layer = self.viewer.add_image(image, name=f"img:{image_name}")
+        self._set_busy(False, f"Loaded: {image_name}")
 
     def _add_batch_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select folder for batch processing")
@@ -228,26 +287,26 @@ class SpotiflowWidget(QWidget):
         image_path = folder / image_name
 
         try:
-            self.status_label.setText(f"Running Spotiflow on: {image_name}")
+            self._set_busy(True, f"Running Spotiflow on: {image_name}")
             image = _load_image_2d(image_path)
             points = self._detect_points(image)
 
-            self.viewer.add_image(image, name=f"img:{image_name}")
-            self.viewer.add_points(
+            self._current_points_layer = self.viewer.add_points(
                 points,
                 name=f"spots:{image_name}",
-                border_color="red",
+                border_color="green",
                 face_color="transparent",
-                size=8,
+                size=10,
             )
 
             count = int(len(points))
             self.single_count_edit.setText(str(count))
             self.status_label.setText(f"Done: {image_name} -> {count} dots")
+            self._set_busy(False, f"Done: {image_name} -> {count} dots")
 
         except Exception as exc:
+            self._set_busy(False, "Error")
             QMessageBox.critical(self, "Detection error", str(exc))
-            self.status_label.setText("Error")
 
     def _run_batch(self):
         folder_paths = [self.folder_list.item(i).text() for i in range(self.folder_list.count())]
@@ -262,6 +321,7 @@ class SpotiflowWidget(QWidget):
 
         rows = []
         total = 0
+        total_images = 0
 
         try:
             for folder_text in folder_paths:
@@ -270,12 +330,13 @@ class SpotiflowWidget(QWidget):
                     continue
 
                 images = list(_iter_images(folder))
+                total_images += len(images)
                 for image_path in images:
-                    self.status_label.setText(f"Processing {image_path.name}")
+                    total += 1
+                    self._set_busy(True, f"Processing {total}/{total_images}: {image_path.name}")
                     image = _load_image_2d(image_path)
                     points = self._detect_points(image)
                     count = int(len(points))
-                    total += 1
 
                     rows.append(
                         {
@@ -290,7 +351,7 @@ class SpotiflowWidget(QWidget):
             out.parent.mkdir(parents=True, exist_ok=True)
             df.to_excel(out, index=False)
 
-            self.status_label.setText(f"Batch done: {total} image(s), saved {out.name}")
+            self._set_busy(False, f"Batch done: {total} image(s), saved {out.name}")
             QMessageBox.information(
                 self,
                 "Batch complete",
@@ -298,5 +359,5 @@ class SpotiflowWidget(QWidget):
             )
 
         except Exception as exc:
+            self._set_busy(False, "Error")
             QMessageBox.critical(self, "Batch error", str(exc))
-            self.status_label.setText("Error")
