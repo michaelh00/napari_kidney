@@ -54,7 +54,7 @@ pip install lightning-utilities torchmetrics
 ### Step 5 — Install the plugin
 
 ```bash
-pip install git+https://github.com/yourname/napari-kidney.git
+pip install git+https://github.com/michaelh00/napari_kidney.git
 ```
 
 ### Step 6 — Launch napari
